@@ -4,6 +4,9 @@ import requests
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, ContextTypes
+from telegram.error import RetryAfter, TimedOut
+import asyncio
+import time
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -172,7 +175,7 @@ def get_ai_pricing_strategy(width, length, height, thickness, quantity, box_type
             headers={
                 "Authorization": f"Bearer {openrouter_api_key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://price-automation-mehrbodcrud285-dzfy6c16.leapcell.dev",  # Replace with your LeapCell URL
+                "HTTP-Referer": os.environ["WEBHOOK_URL"],  # Use LeapCell URL
                 "X-Title": "Box Pricing Bot"
             },
             json={
@@ -198,10 +201,29 @@ async def webhook():
     await application.process_update(update)
     return jsonify({"status": "ok"})
 
-# Set webhook
+# Health check endpoint for LeapCell
+@app.route('/kaithhealthcheck', methods=['GET'])
+@app.route('/kaithheathcheck', methods=['GET'])
+def healthcheck():
+    return jsonify({"status": "healthy"}), 200
+
+# Set webhook with retry logic
 async def set_webhook():
-    await application.bot.set_webhook(url=webhook_url)
-    print(f"Webhook set to {webhook_url}")
+    max_retries = 5
+    retry_delay = 5  # seconds
+    for attempt in range(max_retries):
+        try:
+            await application.bot.set_webhook(url=webhook_url)
+            print(f"Webhook set to {webhook_url}")
+            return
+        except (RetryAfter, TimedOut) as e:
+            print(f"Retry {attempt + 1}/{max_retries} failed: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
+        except Exception as e:
+            print(f"Webhook setup failed: {e}")
+            break
+    print("Failed to set webhook after retries")
 
 if __name__ == '__main__':
     # Add handlers
@@ -215,4 +237,4 @@ if __name__ == '__main__':
     asyncio.run(set_webhook())
 
     # Run Flask app
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=8080)  # Match LeapCell port
