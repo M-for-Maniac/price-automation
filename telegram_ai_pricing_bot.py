@@ -128,7 +128,7 @@ Return ONLY one word: Complex, Assembly, Routine, Competitive.
 
     headers = {
         "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-        "HTTP-Referer": "https://your-leapcell-project",
+        "HTTP-Referer": "https://price-automation-mehrbodcrud285-dzfy6c16.leapcell.dev",
         "X-Title": "Box Pricing Bot"
     }
 
