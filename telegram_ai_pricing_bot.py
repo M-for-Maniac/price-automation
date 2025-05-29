@@ -1,28 +1,22 @@
-# telegram_ai_pricing_bot.py
-
 import os
-from telegram import Update, ReplyKeyboardMarkup
+from flask import Flask, request
+from telegram import Update, Bot
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    filters, ContextTypes, ConversationHandler
+    Application, ApplicationBuilder, CommandHandler, MessageHandler,
+    filters, ConversationHandler, ContextTypes
 )
 import httpx
+import asyncio
 
-# Steps in conversation
+app = Flask(__name__)
+bot_token = os.getenv("BOT_TOKEN")
+bot = Bot(token=bot_token)
+
+# Define constants
 LANGUAGE, WIDTH, LENGTH, HEIGHT, THICKNESS, QUANTITY, BOXTYPE = range(7)
-
-# Pricing Coefficients
-STRATEGY_COEFFICIENTS = {
-    "Complex": 2.8,
-    "Assembly": 2.5,
-    "Routine": 2.0,
-    "Competitive": 1.6,
-    "Discount": 0.8
-}
-
+STRATEGY_COEFFICIENTS = {"Complex": 2.8, "Assembly": 2.5, "Routine": 2.0, "Competitive": 1.6, "Discount": 0.8}
 MATERIAL_COST_PER_MM3 = 0.000002
 
-# Language templates
 TEXTS = {
     "en": {
         "welcome": "Welcome! Please choose your language:",
@@ -52,61 +46,68 @@ TEXTS = {
     }
 }
 
-# Store user data
+# Temporary in-memory user data
 user_data = {}
 
+# --- Conversation Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["English", "فارسی"]]
-    await update.message.reply_text("Welcome! لطفاً زبان را انتخاب کنید:", reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True))
+    await update.message.reply_text(
+        TEXTS["en"]["welcome"],
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    )
     return LANGUAGE
 
 async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = "fa" if "فارسی" in update.message.text else "en"
-    user_data["lang"] = lang
+    context.user_data["lang"] = lang
     await update.message.reply_text(TEXTS[lang]["enter_width"])
     return WIDTH
 
 async def get_width(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data['width'] = float(update.message.text)
-    lang = user_data["lang"]
+    context.user_data['width'] = float(update.message.text)
+    lang = context.user_data["lang"]
     await update.message.reply_text(TEXTS[lang]["enter_length"])
     return LENGTH
 
 async def get_length(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data['length'] = float(update.message.text)
-    lang = user_data["lang"]
+    context.user_data['length'] = float(update.message.text)
+    lang = context.user_data["lang"]
     await update.message.reply_text(TEXTS[lang]["enter_height"])
     return HEIGHT
 
 async def get_height(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data['height'] = float(update.message.text)
-    lang = user_data["lang"]
+    context.user_data['height'] = float(update.message.text)
+    lang = context.user_data["lang"]
     await update.message.reply_text(TEXTS[lang]["enter_thickness"])
     return THICKNESS
 
 async def get_thickness(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data['thickness'] = float(update.message.text)
-    lang = user_data["lang"]
+    context.user_data['thickness'] = float(update.message.text)
+    lang = context.user_data["lang"]
     await update.message.reply_text(TEXTS[lang]["enter_quantity"])
     return QUANTITY
 
 async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data['quantity'] = int(update.message.text)
-    lang = user_data["lang"]
-    await update.message.reply_text(TEXTS[lang]["choose_boxtype"], reply_markup=ReplyKeyboardMarkup(TEXTS[lang]["box_types"], one_time_keyboard=True))
+    context.user_data['quantity'] = int(update.message.text)
+    lang = context.user_data["lang"]
+    await update.message.reply_text(
+        TEXTS[lang]["choose_boxtype"],
+        reply_markup=ReplyKeyboardMarkup(TEXTS[lang]["box_types"], one_time_keyboard=True)
+    )
     return BOXTYPE
 
 async def get_boxtype(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data['boxtype'] = update.message.text
-    lang = user_data["lang"]
+    context.user_data['boxtype'] = update.message.text
+    lang = context.user_data["lang"]
     await update.message.reply_text(TEXTS[lang]["calculating"])
 
-    strategy = await get_pricing_strategy_from_ai(user_data)
+    strategy = await get_pricing_strategy_from_ai(context.user_data)
     if strategy not in STRATEGY_COEFFICIENTS:
         strategy = "Routine"
 
-    user_data['strategy'] = strategy
-    price = calculate_price(user_data)
+    context.user_data['strategy'] = strategy
+    price = calculate_price(context.user_data)
 
     await update.message.reply_text(TEXTS[lang]["final_price"].format(strategy=strategy, price=price))
     return ConversationHandler.END
@@ -125,7 +126,6 @@ Choose a pricing strategy:
 
 Return ONLY one word: Complex, Assembly, Routine, Competitive.
 """
-
     headers = {
         "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
         "HTTP-Referer": "https://price-automation-mehrbodcrud285-dzfy6c16.leapcell.dev",
@@ -147,72 +147,65 @@ Return ONLY one word: Complex, Assembly, Routine, Competitive.
 
 def calculate_price(data):
     w, l, h, t, qty = data['width'], data['length'], data['height'], data['thickness'], data['quantity']
-    face_area = 2 * (w*l + w*h + l*h)  # mm²
-    volume = face_area * t  # mm³ per box
+    face_area = 2 * (w*l + w*h + l*h)
+    volume = face_area * t
     total_volume = volume * qty
     material_cost = total_volume * MATERIAL_COST_PER_MM3
-
-    # Box-specific additional costs
     box_type_cost = get_box_type_extra_cost(data['boxtype'], w, l, h, qty)
-
-    # Final cost with strategy coefficient
     return (material_cost + box_type_cost) * STRATEGY_COEFFICIENTS[data['strategy']]
 
 def get_box_type_extra_cost(box_type, w, l, h, qty):
     box_type = box_type.lower()
-
     if box_type in ["lightbox", "لایت‌باکس"]:
-        # Approx: 1 LED per 100mm perimeter, 1 transformer per 2 boxes
-        perimeter = 2 * (w + h) / 100  # number of LED units
-        led_cost = perimeter * 0.5  # 0.5 per LED unit
-        transformer_cost = (qty // 2 + 1) * 5  # 5 per transformer
+        perimeter = 2 * (w + h) / 100
+        led_cost = perimeter * 0.5
+        transformer_cost = (qty // 2 + 1) * 5
         return (led_cost + transformer_cost) * qty
-
     elif box_type in ["container", "کانتینر"]:
-        # Hinges + handles + lock
-        hinge_cost = 2 * 0.8  # two hinges per box
-        handle_cost = 1.2
-        lock_cost = 2.5
-        return (hinge_cost + handle_cost + lock_cost) * qty
-
+        return (2 * 0.8 + 1.2 + 2.5) * qty
     elif box_type in ["cover", "پوشش"]:
-        # Add installation adhesive/screws and labor
-        installation_cost = 3.0  # per box
-        return installation_cost * qty
-
+        return 3.0 * qty
     elif box_type in ["lasercut", "برش لیزری"]:
-        # Laser cost by perimeter length in mm
-        perimeter = 4 * (w + h + l)
-        return perimeter * 0.002 * qty  # e.g. 0.002 per mm
-
-    else:
-        return 0  # Default
-
+        return 4 * (w + h + l) * 0.002 * qty
+    return 0
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = user_data.get("lang", "en")
+    lang = context.user_data.get("lang", "en")
     await update.message.reply_text(TEXTS[lang]["cancelled"])
     return ConversationHandler.END
 
-if __name__ == '__main__':
-    from telegram.ext import Application
+# --- Telegram Webhook Route ---
+@app.route(f"/webhook/{bot_token}", methods=["POST"])
+def telegram_webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    asyncio.run(application.update_queue.put(update))
+    return "ok"
 
-    application = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
+# --- Setup Telegram Bot Handlers ---
+application: Application = ApplicationBuilder().token(bot_token).build()
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            LANGUAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_language)],
-            WIDTH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_width)],
-            LENGTH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_length)],
-            HEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_height)],
-            THICKNESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_thickness)],
-            QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_quantity)],
-            BOXTYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_boxtype)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler('start', start)],
+    states={
+        LANGUAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_language)],
+        WIDTH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_width)],
+        LENGTH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_length)],
+        HEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_height)],
+        THICKNESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_thickness)],
+        QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_quantity)],
+        BOXTYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_boxtype)],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)]
+)
 
-    application.add_handler(conv_handler)
-    print("Bot is running...")
-    application.run_polling()
+application.add_handler(conv_handler)
+
+# --- Start Flask + Telegram ---
+if __name__ == "__main__":
+    import threading
+    threading.Thread(target=application.run_webhook, kwargs={
+        "listen": "0.0.0.0",
+        "port": int(os.getenv("PORT", 8000)),
+        "webhook_url": f"https://price-automation-mehrbodcrud285-dzfy6c16.leapcell.dev/webhook/{bot_token}"
+    }).start()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
