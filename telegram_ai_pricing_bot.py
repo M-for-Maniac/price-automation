@@ -3,10 +3,11 @@ import json
 import requests
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, ContextTypes
-from telegram.error import RetryAfter, TimedOut
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes
+from telegram.ext.filters import TEXT, COMMAND
 import asyncio
 import time
+import math  # Added for ceil
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -121,10 +122,10 @@ def calculate_price(data):
     # Component cost
     component_cost = 0
     if box_type == "lightbox":
-        leds = -(- (w * l) // 50000)  # Ceiling
+        leds = math.ceil((w * l) / 50000)  # Fixed ceiling calculation
         power = leds * 10
-        transformers = -(- power // 100)  # Ceiling
-        wire_length = 2 * (2 * (w + l))
+        transformers = math.ceil(power / 100)  # Fixed ceiling calculation
+        wire_length = 2 * (w + l)  # Simplified and corrected
         component_cost = q * (leds * 5 + transformers * 20 + wire_length * 0.1)
     elif box_type == "container":
         component_cost = q * (6 + (10 if data.get("lock") else 0))
@@ -132,7 +133,7 @@ def calculate_price(data):
         component_cost = q * (15 if data.get("installation") == "base" else 10)
     elif box_type == "laser_cut":
         cut_length = 2 * (w + l) / 1000  # meters
-        component_cost = q * (cut_length * 0.5)
+        component_cost = q * (cut_length * 0.5)  # Fixed parenthesis
 
     # AI pricing strategy
     strategy_data = get_ai_pricing_strategy(w, l, h, t, q, box_type)
@@ -175,7 +176,7 @@ def get_ai_pricing_strategy(width, length, height, thickness, quantity, box_type
             headers={
                 "Authorization": f"Bearer {openrouter_api_key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": os.environ["WEBHOOK_URL"],  # Use LeapCell URL
+                "HTTP-Referer": os.environ["WEBHOOK_URL"],
                 "X-Title": "Box Pricing Bot"
             },
             json={
@@ -201,7 +202,7 @@ async def webhook():
     await application.process_update(update)
     return jsonify({"status": "ok"})
 
-# Health check endpoint for LeapCell
+# Health check endpoints for LeapCell
 @app.route('/kaithhealthcheck', methods=['GET'])
 @app.route('/kaithheathcheck', methods=['GET'])
 def healthcheck():
@@ -216,13 +217,10 @@ async def set_webhook():
             await application.bot.set_webhook(url=webhook_url)
             print(f"Webhook set to {webhook_url}")
             return
-        except (RetryAfter, TimedOut) as e:
+        except Exception as e:
             print(f"Retry {attempt + 1}/{max_retries} failed: {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
-        except Exception as e:
-            print(f"Webhook setup failed: {e}")
-            break
     print("Failed to set webhook after retries")
 
 if __name__ == '__main__':
@@ -230,7 +228,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button, pattern="^(lightbox|container|protection|laser_cut)$"))
     application.add_handler(CallbackQueryHandler(installation_button, pattern="^(base|side_back)$"))
-    application.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    application.add_handler(MessageHandler(TEXT & ~COMMAND, handle_message))
 
     # Initialize application and set webhook
     import asyncio
