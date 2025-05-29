@@ -1,18 +1,17 @@
 import os
+import asyncio
 from flask import Flask, request
-from telegram import Update, Bot
+from telegram import Update, Bot, ReplyKeyboardMarkup
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, MessageHandler,
     filters, ConversationHandler, ContextTypes
 )
 import httpx
-import asyncio
 
 app = Flask(__name__)
 bot_token = os.getenv("BOT_TOKEN")
 bot = Bot(token=bot_token)
 
-# Define constants
 LANGUAGE, WIDTH, LENGTH, HEIGHT, THICKNESS, QUANTITY, BOXTYPE = range(7)
 STRATEGY_COEFFICIENTS = {"Complex": 2.8, "Assembly": 2.5, "Routine": 2.0, "Competitive": 1.6, "Discount": 0.8}
 MATERIAL_COST_PER_MM3 = 0.000002
@@ -45,9 +44,6 @@ TEXTS = {
         "box_types": [["لایت‌باکس", "کانتینر", "پوشش", "برش لیزری"]],
     }
 }
-
-# Temporary in-memory user data
-user_data = {}
 
 # --- Conversation Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -147,7 +143,7 @@ Return ONLY one word: Complex, Assembly, Routine, Competitive.
 
 def calculate_price(data):
     w, l, h, t, qty = data['width'], data['length'], data['height'], data['thickness'], data['quantity']
-    face_area = 2 * (w*l + w*h + l*h)
+    face_area = 2 * (w * l + w * h + l * h)
     volume = face_area * t
     total_volume = volume * qty
     material_cost = total_volume * MATERIAL_COST_PER_MM3
@@ -178,7 +174,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @app.route(f"/webhook/{bot_token}", methods=["POST"])
 def telegram_webhook():
     update = Update.de_json(request.get_json(force=True), bot)
-    asyncio.run(application.update_queue.put(update))
+    asyncio.create_task(application.process_update(update))
     return "ok"
 
 # --- Setup Telegram Bot Handlers ---
@@ -200,12 +196,13 @@ conv_handler = ConversationHandler(
 
 application.add_handler(conv_handler)
 
-# --- Start Flask + Telegram ---
+# --- Start Flask and Bot ---
 if __name__ == "__main__":
     import threading
-    threading.Thread(target=application.run_webhook, kwargs={
-        "listen": "0.0.0.0",
-        "port": int(os.getenv("PORT", 8000)),
-        "webhook_url": f"https://price-automation-mehrbodcrud285-dzfy6c16.leapcell.dev/webhook/{bot_token}"
-    }).start()
+
+    async def start_bot():
+        await application.initialize()
+        await application.start()
+
+    threading.Thread(target=lambda: asyncio.run(start_bot())).start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
